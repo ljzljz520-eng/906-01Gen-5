@@ -14,12 +14,54 @@ import {
   Clock,
   TrendingUp,
   FileX2,
+  Lock,
 } from 'lucide-react';
+import type { Dataset } from '../types';
 import { useStore } from '../store';
 import { CitationBlock } from '../components/CitationBlock';
 import { LicenseBadge, StatusBadge } from '../components/Badges';
 import { Modal } from '../components/Modal';
 import { NotFoundPage } from './NotFoundPage';
+
+function buildDownloadFile(ds: Dataset): string {
+  const payload = {
+    dataset: {
+      id: ds.id,
+      name: ds.name,
+      authors: ds.authors,
+      organization: ds.organization,
+      domain: ds.domain,
+      license: ds.license,
+      doi: ds.doi,
+      collectionDate: ds.collectionDate,
+      publishedDate: ds.publishedDate,
+      description: ds.description,
+    },
+    schema: ds.fields.map((f) => ({
+      field: f.name,
+      type: f.type,
+      description: f.description,
+      example: f.example,
+    })),
+    citation: ds.citation,
+    usageRestrictions: ds.usageRestrictions,
+    downloadedAt: new Date().toISOString(),
+    source: 'DataCite Hub',
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+function triggerBrowserDownload(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 export function DatasetDetailPage() {
   const { id } = useParams();
@@ -47,23 +89,71 @@ export function DatasetDetailPage() {
     return <NotFoundPage />;
   }
 
+  const isAdmin = currentUser?.role === 'admin';
+  const isOwner = currentUser?.id === dataset.submittedBy;
+  const canViewPrivate =
+    dataset.status === 'approved' ||
+    dataset.status === 'retracted' ||
+    isAdmin ||
+    isOwner;
+
+  if (!canViewPrivate) {
+    return (
+      <div className="container py-20 animate-fade-in">
+        <div className="max-w-xl mx-auto card p-10 text-center">
+          <Lock className="w-14 h-14 text-warning-500 mx-auto mb-4" />
+          <h1 className="font-serif text-2xl font-semibold text-academic-900 mb-2">
+            该数据集暂未公开
+          </h1>
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <StatusBadge status={dataset.status} />
+          </div>
+          <p className="text-academic-600 mb-6 leading-relaxed">
+            此数据集当前处于
+            <span className="font-semibold text-academic-800 mx-1">
+              {dataset.status === 'pending' ? '待审核' : '已驳回'}
+            </span>
+            状态，仅提交者本人和管理员可以查看。
+          </p>
+          <div className="flex items-center justify-center gap-3">
+            <Link to="/datasets" className="btn-outline">
+              <ArrowLeft className="w-4 h-4" /> 返回列表
+            </Link>
+            {!currentUser && (
+              <Link to="/login" className="btn-primary">
+                登录
+              </Link>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const isFavorited =
     currentUser?.favoriteDatasetIds.includes(dataset.id) || false;
-  const isAdmin = currentUser?.role === 'admin';
   const isRetracted = dataset.status === 'retracted';
+  const canDownload = dataset.status === 'approved' && !isRetracted;
 
   const handleToggleFav = () => {
     if (!currentUser) {
       navigate('/login');
       return;
     }
+    if (dataset.status !== 'approved') return;
     toggleFavorite(currentUser.id, dataset.id);
     setFavAnim(true);
     setTimeout(() => setFavAnim(false), 400);
   };
 
   const handleDownload = () => {
-    if (!agreed) return;
+    if (!agreed || !canDownload) return;
+    const safeName = dataset.name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+    const version = dataset.revisions[0]?.version || '1.0';
+    triggerBrowserDownload(
+      `${safeName}__v${version}__datacite-hub.json`,
+      buildDownloadFile(dataset),
+    );
     recordDownload(dataset.id);
     setShowDownloadModal(false);
     setAgreed(false);
@@ -100,6 +190,30 @@ export function DatasetDetailPage() {
             <p className="text-sm text-danger-700 mt-1">
               {dataset.revisions.find((r) => r.type === 'retraction')?.changes ||
                 '因数据问题已被管理员撤稿，请谨慎使用。'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {dataset.status === 'pending' && (isAdmin || isOwner) && (
+        <div className="mb-6 rounded-xl border border-warning-200 bg-warning-50 p-5 flex items-start gap-3">
+          <AlertTriangle className="w-6 h-6 text-warning-600 shrink-0 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-warning-800">该数据集正在等待审核</h3>
+            <p className="text-sm text-warning-700 mt-1">
+              此页面仅您和管理员可见，审核通过后将在平台公开发布。
+            </p>
+          </div>
+        </div>
+      )}
+
+      {dataset.status === 'rejected' && (isAdmin || isOwner) && (
+        <div className="mb-6 rounded-xl border border-danger-200 bg-danger-50 p-5 flex items-start gap-3">
+          <AlertTriangle className="w-6 h-6 text-danger-600 shrink-0 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-danger-800">该数据集未通过审核</h3>
+            <p className="text-sm text-danger-700 mt-1">
+              驳回原因：{dataset.rejectionReason || '未提供原因'}
             </p>
           </div>
         </div>
@@ -272,24 +386,32 @@ export function DatasetDetailPage() {
 
             <button
               onClick={handleToggleFav}
-              className={`w-full btn-outline mb-3 ${favAnim ? 'animate-bounce-soft' : ''}`}
+              disabled={!canDownload}
+              className={`w-full btn-outline mb-3 ${favAnim ? 'animate-bounce-soft' : ''} disabled:opacity-50`}
+              title={!canDownload ? '仅已公开数据集可收藏' : undefined}
             >
               <Heart
                 className={`w-4 h-4 ${isFavorited ? 'fill-danger-500 text-danger-500' : ''}`}
               />
-              {isFavorited ? '已收藏' : '收藏数据集'}
+              {isFavorited ? '已收藏' : canDownload ? '收藏数据集' : '不可收藏'}
             </button>
 
             <button
               onClick={() => setShowDownloadModal(true)}
-              disabled={isRetracted}
+              disabled={!canDownload}
               className="w-full btn-primary"
             >
               <Download className="w-4 h-4" />
-              {isRetracted ? '已撤稿，无法下载' : '下载数据集'}
+              {!canDownload
+                ? dataset.status === 'pending'
+                  ? '审核中，暂不可下载'
+                  : dataset.status === 'rejected'
+                  ? '已驳回，无法下载'
+                  : '已撤稿，无法下载'
+                : '下载数据集'}
             </button>
 
-            {isAdmin && !isRetracted && (
+            {isAdmin && !isRetracted && dataset.status === 'approved' && (
               <div className="mt-5 pt-5 border-t border-academic-100 space-y-2">
                 <div className="text-xs font-semibold text-academic-500 uppercase tracking-wider mb-2">
                   管理员操作

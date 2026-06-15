@@ -125,7 +125,9 @@ export const useStore = create<StoreState>()(
         const currUser = get().currentUser;
         const ids =
           currUser?.id === userId ? currUser.favoriteDatasetIds : [];
-        return get().datasets.filter((d) => ids.includes(d.id));
+        return get()
+          .datasets
+          .filter((d) => ids.includes(d.id) && d.status === 'approved');
       },
 
       getUserNotifications: (userId) =>
